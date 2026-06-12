@@ -647,45 +647,55 @@ function TabTexto({ d }) {
 }
 
 // ── APP PRINCIPAL ─────────────────────────────────────────────────────────────
-// ── Share via ID curto ───────────────────────────────────────────────────────
-async function saveData(data) {
-  const res = await fetch("/api/save", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ data }),
-  });
-  const json = await res.json();
-  if (!json.id) throw new Error("Falha ao salvar");
-  return json.id;
+// ── Encode/decode com compressão ────────────────────────────────────────────
+async function encodeData(data) {
+  const json = JSON.stringify(data);
+  const bytes = new TextEncoder().encode(json);
+  const cs = new CompressionStream("deflate");
+  const writer = cs.writable.getWriter();
+  writer.write(bytes);
+  writer.close();
+  const compressed = await new Response(cs.readable).arrayBuffer();
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(compressed)));
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
-async function loadByID(id) {
-  const res = await fetch(`/api/load?id=${id}`);
-  if (!res.ok) return null;
-  const json = await res.json();
-  return json.data || null;
+async function decodeData(encoded) {
+  try {
+    const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length).map((_, i) => binary.charCodeAt(i));
+    const ds = new DecompressionStream("deflate");
+    const writer = ds.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+    const decompressed = await new Response(ds.readable).arrayBuffer();
+    const json = new TextDecoder().decode(decompressed);
+    return JSON.parse(json);
+  } catch { return null; }
 }
 
-function getIDFromURL() {
+async function getDataFromURL() {
   const params = new URLSearchParams(window.location.search);
-  return params.get("s") || null;
+  const d = params.get("d");
+  if (d) return await decodeData(d);
+  return null;
 }
 
 // ── App Principal ─────────────────────────────────────────────────────────────
 export default function App() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [loadingShare, setLoadingShare] = useState(false);
   const [tab, setTab] = useState("overview");
   const [copied, setCopied] = useState(false);
   const [fromURL, setFromURL] = useState(false);
 
-  // Carregar dados pelo ID da URL ao montar
+  // Carregar dados da URL ao montar
   useEffect(() => {
-    const id = getIDFromURL();
-    if (id) {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("d")) {
       setLoading(true);
-      loadByID(id).then(d => {
+      getDataFromURL().then(d => {
         if (d) { setData(d); setFromURL(true); }
         setLoading(false);
       });
@@ -704,6 +714,7 @@ export default function App() {
         // Limpar params da URL ao subir novo arquivo
         window.history.replaceState({}, "", window.location.pathname);
         setFromURL(false);
+        
       }
       catch (err) { alert("Erro ao ler o arquivo.\n" + err.message); }
       setLoading(false);
@@ -721,14 +732,11 @@ export default function App() {
     if (!data) return;
     setCopied("loading");
     try {
-      const id = await saveData(data);
-      const shortUrl = `${window.location.origin}${window.location.pathname}?s=${id}`;
-      await navigator.clipboard.writeText(shortUrl);
-    } catch {
-      // fallback: codifica na URL
-      const json = JSON.stringify(data);
-      const encoded = btoa(encodeURIComponent(json));
-      await navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?d=${encoded}`);
+      const encoded = await encodeData(data);
+      const url = `${window.location.origin}${window.location.pathname}?d=${encoded}`;
+      await navigator.clipboard.writeText(url);
+    } catch (e) {
+      console.error(e);
     }
     setCopied("done");
     setTimeout(() => setCopied(false), 3000);
